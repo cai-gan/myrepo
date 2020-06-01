@@ -1,0 +1,642 @@
+---
+title: "Explore Newark Census Data"
+author: "Guanfang Cai"
+date: "2020/5/23"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+https://censusreporter.org/profiles/06000US3401351000-newark-city-essex-county-nj/
+```{r, echo=FALSE}
+library(sf)
+library(tidyverse)
+library(magrittr)
+library(mapview)
+library(tidycensus)
+library(wesanderson)
+getwd()
+setwd("D:/ArcGIS_final_project/R/visulization/Visulization")
+devtools::insatll_github("walkerke/tigris")
+install.packages("tigris")
+```
+### Reference: https://walker-data.com/tidycensus/articles/basic-usage.html
+```{r variable dictionary}
+v18 <- load_variables(2018, "acs5", cache = TRUE)
+v90 <- load_variables(1990, "sf1", cache = TRUE)
+v00 <- load_variables(2000, "sf1", cache = TRUE)
+v10 <- load_variables(2010, "sf1", cache = TRUE)
+```
+
+get_acs()
+get_decennial()
+levels():http://www.cookbook-r.com/Manipulating_data/Renaming_levels_of_a_factor/
+aggregation method: Hispanic = sum of variables related to hispanic origin
+```{r echo=F, get 1990 Essex County Race Data}
+hispanic90 <- c(paste0("P010000", seq(1:9)), "P0100010")
+hispanic90
+
+race_90 <- get_decennial(state="NJ", county = "Essex", geography = "tract", year=1990, variables = hispanic90, summary_var = "P0010001", geometry = T)
+
+race_90
+hispName <- c("White", "Black", "Ameri_Ind_Esk", "Asain", "Other",
+              "Hispanic_White", "Hispanic_Black", "Hispanic_Ameri_Ind_Esk",
+              "Hispanic_Asain", "Hispanic_Other")
+
+race_90 %<>% mutate(group = factor(variable))
+levels(race_90$group) <- c("White", "Black", "Ameri_Ind_Esk", "Asain", "Other",
+              "Hispanic_White", "Hispanic_Black", "Hispanic_Ameri_Ind_Esk",
+              "Hispanic_Asain", "Hispanic_Other")
+levels(race_90$group)
+
+race_90 %<>% mutate_at(vars(group), as.character) %>%
+  mutate(group2 = ifelse(str_detect(group, "Ameri_Ind_Esk"), "Other", 
+                      ifelse(str_detect(group, "Hispanic"), "Hispanic", group)))
+
+race_90$group2 <- factor(race_90$group2, 
+                         level = c("White", "Black", "Asain", "Hispanic", "Other"))
+levels(race_90$group2)
+
+race_90 %>% group_by(group2) %>% summarise(sum(value))
+race_90 %>% group_by(group) %>% summarise(sum(value))
+colSums(is.na(race_90)) #is there any NA?
+```
+
+### NAD_1983_StatePlane_New_Jersey_FIPS_2900_Feet: 102711
+```{r get newark boundary geometry data}
+st_layers(dsn="Newark")
+file.exists("Newark")
+getwd()
+
+census_90 <- st_read(dsn = "Newark", layer= "Census_1990")
+str_sub(census_90$GISJOIN, 1, 1) <- ""
+str_sub(census_90$GISJOIN, 3, 3) <- ""
+census_90
+
+plot(st_geometry(census_90))
+#st_crs(census_90) <- 32111
+st_crs(census_90)
+census_90 <- st_transform(census_90, 102711)
+
+census_00 <- st_read(dsn = "Newark", layer="Census_2000")
+st_crs(census_00)
+census_00 <- st_transform(census_00, 102711)
+plot(st_geometry(census_00))
+mapview(census_00)
+census_00
+
+bound <- st_read(dsn = "Newark", layer="Newark_Boundary")
+plot(st_geometry(bound))
+st_crs(bound)
+bound <- st_transform(bound, 102711)
+```
+
+```{r 1990 Race distribution, census tract}
+race_90
+#st_crs(race_90) <- 32111
+race_90 <- st_transform(race_90, 32111)
+st_crs(race_90)
+
+race_90 %>%
+  mutate(pct = 100*(value/summary_value)) %>%
+  ggplot(aes(fill = pct)) +
+  facet_wrap(~group2) +
+  geom_sf(col="white") +
+  scale_fill_viridis_c() +
+  ggtitle("Percentage of Population by Race, Census Tract",
+          subtitle = "Essex County, NJ. 1990") +
+  theme(axis.text.x=element_blank(),
+        axis.text.y=element_blank())
+  
+
+race_90 %<>% mutate(pct = 100*(value/summary_value))
+race90_map <- ggplot() + geom_sf(data=race_90, aes(fill=pct))+
+  geom_sf(data=bound, aes(col="red", alpha=0.1)) +
+  facet_wrap(~race_90$group2) +
+  scale_fill_viridis_c()
+
+race90_map
+```
+
+### 尝试剪切geometry，失败。剪切得到的geometry有427行，而原数据census_90只有96行，即只有96个census tract. 即使用distinct筛选出非重复的数据，仍然有112行
+```{r}
+plot(st_geometry(race_90))
+plot(st_geometry(bound), add = TRUE, col = "red", alpha=0.1)
+plot(st_geometry(census_90), add=TRUE, col="blue")
+new_race_90 = st_intersection(census_90, race_90)
+new_race_90_2 = st_intersection(race_90, bound)
+new_race_90
+ggplot(new_race_90) + geom_sf() #裁剪成功，但是二者并不对齐
+census90_id %>% distinct(GEOID) %>% summary()
+nrow(distinct(census90_id))
+nrow(census90_id)
+nrow(census_90)
+nrow(distinct(race_90))
+
+new_race_90_2
+nrow(distinct(new_race_90_2))
+ggplot(new_race_90_2) + geom_sf()
+
+census90_id <- new_race_90 %>% distinct(GEOID) %>% select(GEOID) 
+census90_id <- "st_geometry<-"(census90_id, NULL) # delete/remove geometry
+nrow(census90_id)
+
+racemap <- ggplot(race_90) + geom_sf()
+census_90_map <- ggplot(census_90) + geom_sf()
+library(gridExtra)
+grid.arrange(racemap, census_90_map)
+
+boundary <- ggplot() + geom_sf(data=bound, col="red", alpha=0.1)
+# racemap + boundary 行不通
+
+```
+
+### 1178 X 900 是个导出图片的尺寸选择
+```{r visuiliaze intersected polygon: Newark City}
+new_race_90_2 %>%
+  ggplot(aes(fill=pct)) +
+  geom_sf(col="white") +
+  facet_wrap(~group2) +
+  scale_fill_viridis_c() +
+  ggtitle("Percentage of Population by Race, Census Tract",
+          subtitle = "Newark City, Essex County, NJ. 1990") +
+  theme(axis.text = element_blank(),
+        axis.ticks = element_blank())
+```
+
+### 画图参考
+https://www.r-graph-gallery.com/48-grouped-barplot-with-ggplot2.html
+```{r get 1990 county subdivision level racial data}
+race_90_sub <- get_decennial(state="NJ", county = "Essex", 
+                             geography = "county subdivision", year=1990,
+                             variables = hispanic90, summary_var = "P0010001")
+
+race_90_sub %>% filter(str_detect(NAME, "Newark"))
+race_90_sub %<>% mutate(group=factor(variable))
+levels(race_90_sub$group) <- hispName # label variable
+levels(race_90_sub$group) 
+
+race_90_sub %<>% mutate_at(vars(group), as.character) %>%
+  mutate(group2 = ifelse(str_detect(group, "Ameri_Ind_Esk"), "Other", 
+                    ifelse(str_detect(group, "Hispanic"), "Hispanic", group)))
+
+race_90_sub$group2 <- factor(race_90_sub$group2, 
+                         level = c("White", "Black", "Asain", "Hispanic", "Other"))
+
+levels(race_90_sub$group2)
+# ============= 初步整理完毕 ==========================
+```
+
+```{r Plot 1990 county subdivision level racial data visulization}
+# 对每一个municipality 来说，它们的人种组成是什么样的：
+race_90_county <- race_90_sub %>% group_by(group2) %>%
+  summarise_if(is.numeric, sum) %>%
+  mutate(pct = 100* value/summary_value) #得到的是整个county的人种比例
+# 45.1% white, 39.3% Black, 3.13% Hispanic, 2.62% Asain
+
+# Essex_Subdivision_Racial_combination_1990
+race_90_sub %>% group_by(group2, NAME) %>%
+  summarise_if(is.numeric, sum) %>%
+  mutate(pct = 100* value/summary_value) %>%
+  ggplot(aes(x=NAME, y=pct, fill = group2)) + 
+  geom_bar(position = "fill", stat = "identity") +
+  theme(axis.text.x = element_text(angle = -45, size=10, face="bold"),
+        legend.text = element_text(size=10, face="bold")) +
+  xlab("Municipalities, Essex County") +
+  ylab("Percentage of Population by Race")+
+  labs(fill = "Legend") +
+  ggtitle("Percentage of Population by Race in Each Municipalities")# every municipality race
+
+nrow(distinct(race_90_sub["NAME"])) # there are 22 municipalities in Essex
+# ===================================================================
+# 每一个municipality 的各个人种分别占据整个county人种的百分比? 比如说
+# 整个county有50%的黑人居住在Newark city. 
+# join race_90_county with race_90_sub
+race_90_county %<>% rename("Total" = "value")
+library(wesanderson)
+names(wesanderson::wes_palettes)
+
+race_90_bysub_map <- race_90_sub %>% 
+  left_join(race_90_county[,1:3], by="group2") %>%
+  mutate(pct = 100*value/Total) %>%
+  ggplot(aes(x=NAME, y=pct, fill=group2)) + 
+  geom_bar(position = "fill", stat = "identity") +
+  theme(axis.text.x = element_text(angle = -45, size=10, face="bold"),
+        legend.text = element_text(size=10, face="bold")) +
+  xlab("Municipalities, Essex County") +
+  ylab("Percentage of Population by Race")+
+  labs(fill = "Legend") +
+  ggtitle("Percentage of Population of Race by Municipalities",
+          subtitle = "Essex County, 1990")
+
+race_90_bysub_map + scale_fill_manual(values = wes_palette(name = "Rushmore"))
+race_90_bysub_map + 
+  scale_fill_manual(values = wes_palette(name = "Moonrise3"))
+race_90_bysub_map + 
+  scale_fill_manual(values = wes_palette(name = "Darjeeling1"))
+```
+
+### Neighborhood
+```{r 将数据aggregate到neighborhood level}
+# 读取neighborhood数据
+st_layers(dsn="Newark")
+neighbor <- st_read("Newark", layer = "Neighborhood_2010")
+st_crs(neighbor)
+st_crs(census_90)
+neighbor <- st_transform(neighbor, 102711)
+neighbor %<>% select(-starts_with("CV"), -contains("Total"),
+                            -starts_with("A"), -starts_with("His"),
+                     -starts_with("O"))
+
+race_90 <- st_transform(race_90, 102711)
+plot(st_geometry(race_90))
+plot(st_geometry(neighbor), add=T, alpha=0.1, col="red")
+race_90point <- st_centroid(race_90)
+plot(st_geometry(race_90point), add=T)
+neighbor_race90 <- st_join(neighbor, race_90point) # spatial join
+                            
+plot(st_geometry(neighbor_race90))
+neighbor_race90_2 <- neighbor_race90 %>% group_by(Neighborho, group) %>%
+  mutate(value=sum(value),
+         summary_value = sum(summary_value)) #可以看到虽然没用抹掉其他信息，但是没一行的值都已经被sum后的值所替代
+  
+# 需要注意的是，在这里不能单纯的用sum来计算neighborhood种的summary_value,
+# 因为当你group2中有重复的分组（比如Hispanic, other)时，summary_value会被重复
+# 叠加计算, 鉴于summary_value 与group2没关系，我们只需要的是不同census tract
+# 之间数据的叠加，我们可以先用group1和neighbor计算，再由group2计算.
+neighbor_race90 %<>% group_by(Neighborho, group) %>%
+  summarise(value=sum(value),
+         summary_value = sum(summary_value)) %>%
+  mutate(group2 = ifelse(str_detect(group, "Ameri_Ind_Esk"), "Other", 
+                ifelse(str_detect(group, "Hispanic"), "Hispanic", group))) %>%
+  group_by(Neighborho, group2) %>%
+  summarise(value = sum(value),
+         summary_value = first(summary_value)) %>%
+  select(Neighborho, group2, value, summary_value, everything()) %>%
+  mutate(pct = 100* value/summary_value)
+
+neighbor_race90$group2 %<>% factor(,level = c("White", "Black", "Asain", "Hispanic", "Other")) 
+
+neighbor_race90
+race_90 %>% group_by(GEOID, group2) %>% mutate(value=sum(value), summary_value = sum(summary_value)) %>%
+filter(GEOID == "34013000100")
+```
+
+```{r Neighborhood Race 1990 Visulization, echo=F}
+neighbor_race90 %>% 
+  ggplot(aes(fill=pct)) + geom_sf(col="white") +
+  facet_wrap(~group2) +
+  ggtitle("Percentage of Population by Race, Neighborhood",
+          subtitle = "Newark City, Essex County, 1990") +
+  xlab("") + ylab("") + scale_fill_viridis_c()
+```
+
+```{r 测试, eval=FALSE, echo=F}
+library(plyr)
+head(mtcars)
+cyl <- revalue(factor(mtcars$cyl), c("six"=6, "four"=4, "eight"=8))
+cyl
+levels(cyl) <- c("four", "six", "eight")
+cyl %>% dplyr::group_by(cyl) %>% summarise(n())
+cyl %>% group_by(gear) %>% summarise(n())
+```
+
+```{r get 2010 county subdivision racial data}
+hispanic10 <- c(paste0("P00500", seq(2:9)),
+                paste0("P0050", seq(from=10, to=17, by=1)))
+hispanic10
+race_18_sub <- get_decennial(state="NJ", county = "Essex", 
+                             geography = "county subdivision", year=2018, 
+                             variables = hispanic10, summary_var = "P005001",
+                             geometry = T)
+race_18_sub
+```
+
+```{r stacked bar chart test, eval=FALSE}
+specie <- c(rep("sorgho" , 3) , rep("poacee" , 3) , rep("banana", 3) , rep("triticum" , 3) )
+condition <- rep(c("normal" , "stress" , "Nitrogen") , 4)
+value <- abs(rnorm(12 , 0 , 15))
+data <- data.frame(specie,condition,value)
+data
+
+colSums(mtcars[1:2])
+head(mtcars)
+
+race_90_sub %>% group_by(NAME, group2) %>% 
+  summarise(total = colSums(.[4])) #没用
+
+ifelse(str_detect(group, "Hispanic_Ameri"), "Hispanic_Other"),
+                              ifelse(str_detect(group, "_White"), "Hispanic",
+                               ifelse(str_detect(group, "_Black"), "Hispanic",
+                                ifelse(str_detect(group, "_Asain"))))
+```
+
+```{r IMPUS data extract by ipumsr}
+library(ipumsr)
+vignette("value-labels", package="ipumsr")
+vignette("imums-geography", package="ipumsr")
+vignette("ipums-cps")
+vignette("ipums-nhgis")
+vignette("ipums-terra")
+```
+
+```{r get 2018 below Poverty level population by age}
+poor_m18v <- c(paste0("B17001_00", seq(from=4, to=9, by=1)),
+              paste0("B17001_0", seq(from=10, to=16, by=1)))
+poor_m18v
+poor_m18 <- get_acs(state="NJ", county="Essex", year=2018, geography="county subdivision", variables=poor_m18v, summary_var ="B17001_002", geometry = T)
+
+poor_m18 %<>% mutate(group = factor(variable))
+levels(poor_m18$group)
+poor_m18v_label = c("<5_years", "5_years", "6-11_years", "12-14_years", "15_years", "16-17_years", "18-24_years", "25-34_years", "35-44_years", "45-54_years", "55-64_years", "65-74_years", ">=75_years")
+poor_m18v_label
+levels(poor_m18$group) <- poor_m18v_label
+
+# str_sub(poor_m18v_label, 1, 1) <- "F"
+
+poor_m18 %<>% rename(male_pop = "estimate",
+                     male_moe = "moe",
+                     Total_povety = "summary_est",
+                     Total_povety_moe = "summary_moe")
+# Female data ========================================================
+poor_f18v <- c(paste0("B17001_0", seq(from=18, to=30, by=1)))
+poor_f18v
+poor_f18 <- get_acs(state="NJ", county="Essex", year=2018, geography="county subdivision", variables=poor_f18v, summary_var ="B17001_001")
+
+poor_18 %<>% mutate(group = factor(variable))
+levels(poor_18$group) <- poor_m18v_label
+levels(poor_18$group)
+
+poor_f18 %<>% rename(total = "summary_est",
+                     total_moe = "summary_moe",
+                     female_var = "variable", 
+                     female_pop = "estimate",
+                     female_moe = "moe")
+poor_f18
+# Now join male and female data =======================================
+poor_18 <- full_join(poor_m18, poor_f18, 
+                     by=c("GEOID", "group"))
+poor_18 %<>% 
+  mutate(group2 = 
+    ifelse(str_detect(group, "<5|5_y|6-11|12-14|15|16-17"), "<18 Years",
+     ifelse(str_detect(group, "55-64|65|75"), "55+ Years", as.character(group))))
+poor_18$group2 %<>% factor(, levels = c("<18 Years", "18-24_years", "25-34_years", "35-44_years", "45-54_years", "55+ Years"))
+```
+
+```{r Poverty data adjust}
+poor_18df <- "st_geometry<-" (poor_18g, NULL)
+sqrt_sum <- function(x){
+  sqrt(sum(x^2))
+}
+
+sqrt_sum2 <- function(x1, x2){
+  sqrt(x1^2 + x2^2)
+}
+
+# generate municipalities' name by substring the NAME.x, use str_split()
+poor_18 %<>% separate(NAME.x, c("SubName", "County"), sep=", ") 
+
+poor_18g <- poor_18 %>% group_by(SubName, group2) %>%
+  summarize(male_pop = sum(male_pop),
+            male_moe = sqrt_sum(male_moe),
+            female_pop = sum(female_pop),
+            female_moe = sqrt_sum(female_moe),
+            total = first(total),
+            total_moe = first(total_moe),
+            total_poverty=first(Total_povety),
+            total_poverty_moe = first(Total_povety_moe))
+poor_18g
+poor_18g %>% group_by(SubName) %>% summarise_if(is.numeric, first)
+poor_18g %<>% mutate(pop = male_pop+female_pop,
+                    pop_moe = sqrt_sum2(male_moe, female_moe))
+  select(contains("pop"), contains("moe"))
+```
+
+```{r Visulizae population below poverty by age}
+theme_set(
+  theme_gray(base_size = 13)
+)
+## Total Population Below Poverty in Each Municipalities of Essex==================
+poor_18g %>%
+ggplot(aes(x=group2, y=pop)) +
+  geom_bar(stat = "identity", fill="light blue", color="black")+
+  geom_errorbar(aes(ymin=pop-pop_moe, ymax=pop+pop_moe), 
+                width=0.5, position = position_dodge(.9)) +
+  labs(title = "Total Population Below Poverty in Each Municipalities",
+       subtitle = "Essex County, NJ. 2014 - 2018") +
+  xlab("Municipalities")+
+  ylab("Population Below Poverty") +
+  geom_text(aes(label=paste0(round(pop/1000, 2), "k")), 
+            position=position_dodge(width=0.9), vjust= -0.5) +
+  theme_gray(base_size = 11) +
+  facet_wrap(~SubName) + 
+  theme(axis.text.x = element_text(angle = -45, size=10, face="bold")) 
+
+ggsave("./output/Total Population Below Poverty In Each Municipalitiy.png", width=14, height = 10, dpi = "print")
+
+## Newark Along =======================================================
+poor_18g %>% filter(SubName == "Newark city") %>%
+ggplot(aes(x=group2, y=pop)) +
+  geom_bar(stat = "identity", fill="light blue", color="black")+
+  geom_errorbar(aes(ymin=pop-pop_moe, ymax=pop+pop_moe), 
+                width=0.5, position = position_dodge(.9)) +
+  labs(title = "Total Population Below Poverty in Newark City",
+       subtitle = "Essex County, NJ. 2014 - 2018") +
+  xlab("Age Cohort")+
+  ylab("Population Below Poverty") +
+  geom_text(aes(label=paste0(round(pop/1000, 2), "k")), 
+            position=position_dodge(width=0.9), vjust= -2.5) +
+  theme_gray(base_size = 15) +
+  theme(axis.text.x = element_text(angle = -45, size=13, face="bold")) 
+
+ggsave("./output/Total Population Below Poverty In Newark.png", width=8, height = 8, dpi = "print")
+# Which Municipalities Has The Most Population Below Poverty
+library(ggspatial)
+library(geosphere)
+municipal_center <- st_centroid(poor_18g)
+municipal_center %<>% distinct(SubName) %>%
+  mutate(lat = unlist(map(geometry, 1)),
+         lon = unlist(map(geometry, 2)))
+# 生成municipal centroid，从而可以拿来作为标注的点
+
+## 生成total poverty地图 =====================
+poor1 <- poor_18g %>% group_by(SubName) %>% 
+  summarise_at(vars(contains("poverty")), first) %>%
+  ggplot(aes(fill = total_poverty)) + geom_sf(col="black") +
+  ggtitle("Population Below Poverty",
+          subtitle = "Essex County, NJ. 2014-2018") + 
+  theme(axis.text=element_blank(),
+        axis.ticks = element_blank()) +
+  labs(fill = "Population") +
+  scale_fill_distiller(type="seq", trans="reverse", palette = "Blues") +
+  annotation_scale(location = "bl", width_hint=0.5) +
+  annotation_north_arrow(location = "bl", which_north="true",
+                         pad_x = unit(0.75, "in"), pad_y = unit(0.5, "in"))
+poor1
+ggsave("./output/Essex Population Below Poverty Map_2018.png", width = 6, height = 6, dpi="print")
+
+## 生成由大到小排列的total poverty 条形图=========================
+poor2 <- poor_18g %>% group_by(SubName) %>% 
+  summarise_at(vars(contains("poverty")), first) %>% 
+  ggplot(aes(x=fct_reorder(SubName, total_poverty), y=total_poverty)) +
+  geom_bar(stat="identity", alpha=0.8, fill="skyblue") + 
+  geom_errorbar(aes(ymin = total_poverty - total_poverty_moe,
+                    ymax= total_poverty + total_poverty_moe), 
+                    width=0.4, col="black") + coord_flip() +
+  ggtitle("Population Below Poverty in Essex County", 
+          subtitle = "Essex County, NJ. 2014-2018") + 
+  xlab("Municipality Name") + ylab("Population") + 
+  theme(legend.position = "none")
+
+ggsave("./output/Population Below Poverty In Essex County_2018.png", width = 8, height=6, dpi = "print")
+
+library(gridExtra)
+grid.arrange(poor1, poor2, nrow=1)
+ggsave("./output/Highest Population Below Poverty in Essex_big.png", width=10, height = 6, dpi="print") # dpi = "retina"/"print"/"screen"
+
+
+# Newark Percentage of Population Below Poverty by Age Cohort.
+
+# 
+```
++geom_text(data=municipal_center, aes(x=lat, y=lon, label=SubName),
+            color="grey", fontface="bold") #行不通，为什么？（用来作annotation）
+
+```{r Table: population below poverty in Essex County}
+poverty_table <- poor_18g %>% group_by(SubName) %>% 
+  summarise_at(vars(contains("total")), first)
+
+poverty_table
+
+v <- paste0("B17001_0", c("01", "02", "03", 17))
+poverty_test <- get_acs(state="NJ", county="Essex", year=2018, geography="county subdivision", variables= v)
+
+poverty_test #验证发现我上边得到的结果没错
+
+# colSum and rowSums, 尝试在tibble中求行或列的和 =====================
+poor_18df %>% filter(SubName %>% startsWith("Newark")) %>%
+  select(3, 5) %>% ungroup() %>% summarise_if(is.numeric, funs(sum))
+  
+Filter(is.numeric, poor_18g)
+
+poor_18df %>% select_if(is.numeric) %>% ungroup() %>%
+  mutate(sum = select(., 3, 5)) %>% apply(1, sum, na.rm=T) #not working
+
+# sum up each row
+poor_18df %>% replace(is.na(.), 0) %>%
+  filter(SubName == "Newark city") %>%
+  mutate(sum = rowSums(.[c(3, 5)])) %>%
+  select(3, 5, 11)
+
+# sum down each column
+poor_18df %>% filter(SubName == "Newark city") %>%
+  select(3, 5) %>%
+  summarise_all(funs(sum))
+```
+
+```{r test, eval=FALSE}
+subName <- select(poor_18, NAME.x)
+subName <- 'st_geometry<-' (subName, NULL)
+subName <- as.character(head(subName, 10))
+subName %>% 
+  mutate(subname = str_split(NAME.x, pattern = ", ", simplify = T))
+
+str(subName)
+subName2 <- str_split(subName[1, 1], pattern = fixed(", "), simplify = T)
+subName2 %<>% unlist()
+subName2
+class(subName2)
+class(subName)
+subName2[, 1]
+subName[10,]
+
+# separate
+df <- data.frame(x = c(NA, "a.b", "a.d", "b.c"))
+df %>% separate(x, c("A", "B"))
+head(subName)
+subName %<>% head(, 10)
+subName
+subName %>% separate(NAME.x, c("A", "B", "C"), sep=",")
+
+df <- data.frame(x = c("a", "a b", "a b c", NA))
+df %>% separate(x, c("a", "b"), extra = "drop", fill = "left")
+# fill with missing value on the left (fill="left")
+```
+
+```{r Chart Poverty Continue}
+fix(bbc_style) # 调整bbc_style 默认字体，原配置太大号了
+## define a function to calculate the margin of error of rate
+# sqrt(moe^2 - prop^2*moe_total^2)/esti_total)
+pct_moe <- function(x1, x2, x3, x4){
+  sqrt(abs((x1^2 - x2^2 * x3^2)))/x4
+}
+
+poor_18g %<>% mutate(pct_poverty = pop/total,
+                     pct_poverty_moe = pct_moe(pop_moe, pop/total_poverty, 
+                                               total_poverty_moe, total_poverty))
+poor_18g %>% select(contains("pct"), contains("pop"), contains("poverty")) %>% 
+filter(SubName == "Newark city")
+### Child Poverty Overview =========================================
+poor_18g %>% filter(SubName == "Newark city") %>%
+  ggplot(aes(x=group2, y=pct_poverty)) + 
+  geom_bar(fill="skyblue", stat = "identity", alpha=0.7) +
+  geom_errorbar(aes(ymin = pct_poverty - pct_poverty_moe, 
+                ymax = pct_poverty + pct_poverty_moe, width=0.4)) +
+  geom_text(aes(label=paste0(round(pct_poverty, 2)*100, "%")), 
+            position=position_dodge(width=0.9), vjust= -2.5) +
+  scale_y_continuous(labels= scales::percent_format(accuracy=1)) +
+  coord_cartesian(ylim = c(0,1.05)) + 
+  labs(title = "Newark City: Poverty Rate in Age Cohort",
+       subtitle = "Essex County, NJ. 2018",
+       x = "Age Cohort", y ="% of Population Below Poverty",
+       caption = "Source: ACS 1-Year Estimated") + cgf_style()
+
+ggsave("./output/Newark City Poverty Rate in Age Cohort.png", width = 8, height = 6, dpi = "print")
+
+### 谨记！！！！ geom_errorbar中的ymin, ymax 要写在aes中
+fix(bbc_style)
+
+ggplot(poor_18g, aes(x = group2, y=total)) + geom_bar(stat="identity")
+```
+
+
+### 自定义画图
+```{r cgf-style}
+cgf_style <- function () 
+{
+  font <- "Times"
+  ggplot2::theme(plot.title = ggplot2::element_text(family = font, 
+    size = 18, face = "bold", color = "#222222"), plot.subtitle = ggplot2::element_text(family = font, 
+    size = 16, margin = ggplot2::margin(9, 0, 9, 0)), plot.caption = ggplot2::element_text(family = font, size=10, face = "italic"), 
+    legend.position = "top", legend.text.align = 0, legend.background = ggplot2::element_blank(), 
+    legend.title = ggplot2::element_blank(), legend.key = ggplot2::element_blank(), 
+    legend.text = ggplot2::element_text(family = font, size = 16, 
+      color = "#222222"), 
+    axis.text = ggplot2::element_text(family = font, size = 12, 
+      color = "#222222"), axis.text.x = ggplot2::element_text(margin = ggplot2::margin(5, 
+      b = 10)), axis.ticks = ggplot2::element_blank(), 
+    axis.line = ggplot2::element_blank(), panel.grid.minor = ggplot2::element_blank(), 
+    axis.title = ggplot2::element_text(family = font, size = 13, face = "bold"),
+    panel.grid.major.y = ggplot2::element_line(color = "#cbcbcb"), 
+    panel.grid.major.x = ggplot2::element_blank(), panel.background = ggplot2::element_rect(colour = "grey"), 
+    strip.background = ggplot2::element_rect(fill = "white"), 
+    strip.text = ggplot2::element_text(size = 14, hjust = 0))
+}
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
